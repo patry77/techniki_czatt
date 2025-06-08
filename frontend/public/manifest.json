@@ -1,0 +1,27 @@
+{
+    "short_name": "ChatApp",
+    "name": "ChatApp - Komunikator",
+    "description": "Aplikacja czatu inspirowana Slackiem",
+    "icons": [
+      {
+        "src": "favicon.ico",
+        "sizes": "64x64 32x32 24x24 16x16",
+        "type": "image/x-icon"
+      },
+      {
+        "src": "icon-192.png",
+        "type": "image/png",
+        "sizes": "192x192"
+      },
+      {
+        "src": "icon-512.png",
+        "type": "image/png",
+        "sizes": "512x512"
+      }
+    ],
+    "start_url": ".",
+    "display": "standalone",
+    "theme_color": "#7C3AED",
+    "background_color": "#0F172A",
+    "orientation": "portrait-primary"
+  }

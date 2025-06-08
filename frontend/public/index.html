@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="pl">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" href="%PUBLIC_URL%/favicon.ico" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#7C3AED" />
+    <meta name="description" content="ChatApp - Komunikator inspirowany Slackiem" />
+    
+    <!-- PWA Meta Tags -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="ChatApp" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    
+    <!-- Open Graph Meta Tags -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="ChatApp - Komunikator" />
+    <meta property="og:description" content="Aplikacja czatu inspirowana Slackiem" />
+    <meta property="og:image" content="%PUBLIC_URL%/icon-512.png" />
+    <meta property="og:url" content="http://localhost:3000" />
+    
+    <!-- Twitter Card Meta Tags -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="ChatApp - Komunikator" />
+    <meta name="twitter:description" content="Aplikacja czatu inspirowana Slackiem" />
+    <meta name="twitter:image" content="%PUBLIC_URL%/icon-512.png" />
+    
+    <!-- Manifest -->
+    <link rel="manifest" href="%PUBLIC_URL%/manifest.json" />
+    
+    <!-- Apple Touch Icons -->
+    <link rel="apple-touch-icon" href="%PUBLIC_URL%/icon-192.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="%PUBLIC_URL%/icon-192.png" />
+    
+    <!-- Preconnect to external resources -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+    
+    <!-- Preload critical resources -->
+    <link rel="preload" href="%PUBLIC_URL%/notification.mp3" as="audio" />
+    
+    <title>ChatApp - Komunikator</title>
+    
+    <!-- Inline critical CSS for faster loading -->
+    <style>
+      /* Critical CSS for initial render */
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      
+      body {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        background-color: #f9fafb;
+      }
+      
+      .dark body {
+        background-color: #111827;
+        color: #f9fafb;
+      }
+      
+      /* Loading spinner */
+      .loading-spinner {
+        display: inline-block;
+        width: 40px;
+        height: 40px;
+        border: 3px solid rgba(124, 58, 237, 0.3);
+        border-radius: 50%;
+        border-top-color: #7c3aed;
+        animation: spin 1s ease-in-out infinite;
+      }
+      
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+      
+      /* Initial loading screen */
+      #initial-loading {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        z-index: 9999;
+      }
+      
+      #initial-loading h1 {
+        color: white;
+        font-size: 2rem;
+        font-weight: 700;
+        margin-bottom: 1rem;
+      }
+      
+      #initial-loading .loading-spinner {
+        border-color: rgba(255, 255, 255, 0.3);
+        border-top-color: white;
+      }
+    </style>
+  </head>
+  
+  <body>
+    <noscript>
+      <div style="padding: 20px; text-align: center; font-family: Arial, sans-serif;">
+        <h1>JavaScript jest wymagany</h1>
+        <p>Ta aplikacja wymaga włączonego JavaScript w przeglądarce.</p>
+        <p>Proszę włączyć JavaScript i odświeżyć stronę.</p>
+      </div>
+    </noscript>
+    
+    <!-- Initial loading screen -->
+    <div id="initial-loading">
+      <h1>ChatApp</h1>
+      <div class="loading-spinner"></div>
+      <p style="color: white; margin-top: 1rem; opacity: 0.8;">Ładowanie aplikacji...</p>
+    </div>
+    
+    <!-- React root -->
+    <div id="root"></div>
+    
+    <!-- Service Worker Registration -->
+    <script>
+      // Remove initial loading screen when React app loads
+      window.addEventListener('load', function() {
+        setTimeout(function() {
+          const loading = document.getElementById('initial-loading');
+          if (loading) {
+            loading.style.opacity = '0';
+            loading.style.transition = 'opacity 0.5s ease';
+            setTimeout(function() {
+              loading.remove();
+            }, 500);
+          }
+        }, 1000);
+      });
+      
+      // Register Service Worker
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', function() {
+          navigator.serviceWorker.register('%PUBLIC_URL%/sw.js')
+            .then(function(registration) {
+              console.log('SW registered: ', registration);
+            })
+            .catch(function(registrationError) {
+              console.log('SW registration failed: ', registrationError);
+            });
+        });
+      }
+      
+      // Handle offline/online status
+      window.addEventListener('online', function() {
+        console.log('Aplikacja jest online');
+        if (window.dispatchEvent) {
+          window.dispatchEvent(new Event('app-online'));
+        }
+      });
+      
+      window.addEventListener('offline', function() {
+        console.log('Aplikacja jest offline');
+        if (window.dispatchEvent) {
+          window.dispatchEvent(new Event('app-offline'));
+        }
+      });
+      
+      // PWA Install prompt
+      let deferredPrompt;
+      window.addEventListener('beforeinstallprompt', function(e) {
+        e.preventDefault();
+        deferredPrompt = e;
+        
+        // Show install button or banner
+        if (window.showInstallPrompt) {
+          window.showInstallPrompt();
+        }
+      });
+      
+      // Handle PWA install
+      window.installPWA = function() {
+        if (deferredPrompt) {
+          deferredPrompt.prompt();
+          deferredPrompt.userChoice.then(function(choiceResult) {
+            if (choiceResult.outcome === 'accepted') {
+              console.log('Użytkownik zainstalował PWA');
+            }
+            deferredPrompt = null;
+          });
+        }
+      };
+      
+      // Handle app installed
+      window.addEventListener('appinstalled', function(evt) {
+        console.log('Aplikacja została zainstalowana');
+      });
+    </script>
+    
+    <!-- Performance monitoring -->
+    <script>
+      // Basic performance monitoring
+      window.addEventListener('load', function() {
+        if ('performance' in window) {
+          const timing = performance.timing;
+          const loadTime = timing.loadEventEnd - timing.navigationStart;
+          console.log('Page load time:', loadTime + 'ms');
+          
+          // Send to analytics if needed
+          if (window.gtag) {
+            gtag('event', 'timing_complete', {
+              'name': 'load',
+              'value': loadTime
+            });
+          }
+        }
+      });
+    </script>
+  </body>
+</html>
