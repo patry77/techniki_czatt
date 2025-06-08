@@ -37,9 +37,9 @@ app.use(session({
   resave: false,
   saveUninitialized: false,
   cookie: {
-    secure: false, // Ustaw na true w produkcji z HTTPS
+    secure: false,
     httpOnly: true,
-    maxAge: 24 * 60 * 60 * 1000 // 24 godziny
+    maxAge: 24 * 60 * 60 * 1000
   }
 }));
 
@@ -57,7 +57,7 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/chat-app'
 // Model użytkownika
 const userSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
-  password: { type: String }, // Opcjonalne dla Google SSO
+  password: { type: String },
   googleId: { type: String }, // ID Google dla SSO
   username: { type: String, required: true },
   profilePicture: { type: String, default: '/default-avatar.png' },
@@ -94,6 +94,10 @@ const messageSchema = new mongoose.Schema({
   editedAt: { type: Date },
   isPrivate: { type: Boolean, default: false },
   read: { type: Boolean, default: false },
+  // Pola dla wątków
+  parentMessage: { type: mongoose.Schema.Types.ObjectId, ref: 'Message' }, // ID wiadomości nadrzędnej
+  threadReplies: { type: Number, default: 0 }, // Liczba odpowiedzi w wątku
+  lastReplyAt: { type: Date }, // Data ostatniej odpowiedzi w wątku
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -476,7 +480,7 @@ app.get('/api/messages/private/:userId', authenticateToken, async (req, res) => 
 app.post('/api/messages/private/:userId', authenticateToken, upload.single('file'), async (req, res) => {
   try {
     const { userId } = req.params;
-    const { content, type = 'text' } = req.body;
+    const { content, type = 'text', parentMessageId } = req.body;
     
     const messageData = {
       sender: req.user.userId,
@@ -484,6 +488,11 @@ app.post('/api/messages/private/:userId', authenticateToken, upload.single('file
       type,
       isPrivate: true
     };
+    
+    // Jeśli to odpowiedź w wątku
+    if (parentMessageId) {
+      messageData.parentMessage = parentMessageId;
+    }
     
     if (type === 'text') {
       messageData.content = content;
@@ -495,6 +504,14 @@ app.post('/api/messages/private/:userId', authenticateToken, upload.single('file
     const message = await Message.create(messageData);
     await message.populate('sender', 'username profilePicture');
     await message.populate('receiver', 'username profilePicture');
+    
+    // Jeśli to odpowiedź w wątku, zaktualizuj wiadomość nadrzędną
+    if (parentMessageId) {
+      await Message.findByIdAndUpdate(parentMessageId, {
+        $inc: { threadReplies: 1 },
+        lastReplyAt: new Date()
+      });
+    }
     
     // Emituj wiadomość przez Socket.IO do odbiorcy i nadawcy
     io.to(`user-${userId}`).emit('privateMessage', message);
@@ -646,13 +663,18 @@ app.put('/api/notifications/read', authenticateToken, async (req, res) => {
 app.post('/api/channels/:channelId/messages', authenticateToken, upload.single('file'), async (req, res) => {
   try {
     const { channelId } = req.params;
-    const { content, type = 'text' } = req.body;
+    const { content, type = 'text', parentMessageId } = req.body;
     
-  const messageData = {
+    const messageData = {
       channel: channelId,
       sender: req.user.userId,
       type
     };
+    
+    // Jeśli to odpowiedź w wątku
+    if (parentMessageId) {
+      messageData.parentMessage = parentMessageId;
+    }
     
     if (type === 'text') {
       messageData.content = content;
@@ -663,6 +685,14 @@ app.post('/api/channels/:channelId/messages', authenticateToken, upload.single('
     
     const message = await Message.create(messageData);
     await message.populate('sender', 'username profilePicture');
+    
+    // Jeśli to odpowiedź w wątku, zaktualizuj wiadomość nadrzędną
+    if (parentMessageId) {
+      await Message.findByIdAndUpdate(parentMessageId, {
+        $inc: { threadReplies: 1 },
+        lastReplyAt: new Date()
+      });
+    }
     
     // Emituj wiadomość przez Socket.IO
     io.to(channelId).emit('newMessage', message);
@@ -680,6 +710,129 @@ app.post('/api/channels/:channelId/messages', authenticateToken, upload.single('
         data: { channelId, messageId: message._id }
       });
     }
+    
+    res.status(201).json(message);
+  } catch (error) {
+    res.status(500).json({ message: 'Błąd serwera' });
+  }
+});
+
+// Pobierz wiadomości z wątku
+app.get('/api/messages/:messageId/thread', authenticateToken, async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const { limit = 50 } = req.query;
+    
+    // Pobierz wiadomość nadrzędną
+    const parentMessage = await Message.findById(messageId)
+      .populate('sender', 'username profilePicture');
+    
+    if (!parentMessage) {
+      return res.status(404).json({ message: 'Wiadomość nie znaleziona' });
+    }
+    
+    // Pobierz odpowiedzi w wątku
+    const threadMessages = await Message.find({ parentMessage: messageId })
+      .populate('sender', 'username profilePicture')
+      .sort({ createdAt: 1 })
+      .limit(parseInt(limit));
+    
+    res.json({
+      parentMessage,
+      threadMessages
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Błąd serwera' });
+  }
+});
+
+// Odpowiedz w wątku kanałowym
+app.post('/api/messages/:messageId/thread/reply', authenticateToken, upload.single('file'), async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const { content, type = 'text', parentMessageId } = req.body;
+    
+    // Pobierz wiadomość nadrzędną aby sprawdzić kanał
+    const parentMessage = await Message.findById(parentMessageId || messageId);
+    if (!parentMessage) {
+      return res.status(404).json({ message: 'Wiadomość nadrzędna nie znaleziona' });
+    }
+    
+    const messageData = {
+      channel: parentMessage.channel,
+      sender: req.user.userId,
+      type,
+      parentMessage: parentMessageId || messageId
+    };
+    
+    if (type === 'text') {
+      messageData.content = content;
+    } else if (req.file) {
+      messageData.fileUrl = `/uploads/${req.file.filename}`;
+      messageData.fileName = req.file.originalname;
+    }
+    
+    const message = await Message.create(messageData);
+    await message.populate('sender', 'username profilePicture');
+    
+    // Zaktualizuj wiadomość nadrzędną
+    await Message.findByIdAndUpdate(parentMessageId || messageId, {
+      $inc: { threadReplies: 1 },
+      lastReplyAt: new Date()
+    });
+    
+    // Emituj specjalny event dla odpowiedzi w wątku zamiast zwykłej wiadomości
+    io.to(parentMessage.channel.toString()).emit('threadReply', {
+      ...message.toObject(),
+      parentMessageId: parentMessageId || messageId
+    });
+    
+    res.status(201).json(message);
+  } catch (error) {
+    res.status(500).json({ message: 'Błąd serwera' });
+  }
+});
+
+// Odpowiedz w wątku prywatnym
+app.post('/api/messages/private/:userId/thread', authenticateToken, upload.single('file'), async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { content, type = 'text', parentMessageId } = req.body;
+    
+    const messageData = {
+      sender: req.user.userId,
+      receiver: userId,
+      type,
+      isPrivate: true,
+      parentMessage: parentMessageId
+    };
+    
+    if (type === 'text') {
+      messageData.content = content;
+    } else if (req.file) {
+      messageData.fileUrl = `/uploads/${req.file.filename}`;
+      messageData.fileName = req.file.originalname;
+    }
+    
+    const message = await Message.create(messageData);
+    await message.populate('sender', 'username profilePicture');
+    await message.populate('receiver', 'username profilePicture');
+    
+    // Zaktualizuj wiadomość nadrzędną
+    await Message.findByIdAndUpdate(parentMessageId, {
+      $inc: { threadReplies: 1 },
+      lastReplyAt: new Date()
+    });
+    
+    // Emituj specjalny event dla odpowiedzi w wątku prywatnym
+    io.to(`user-${userId}`).emit('privateThreadReply', {
+      ...message.toObject(),
+      parentMessageId: parentMessageId
+    });
+    io.to(`user-${req.user.userId}`).emit('privateThreadReply', {
+      ...message.toObject(),
+      parentMessageId: parentMessageId
+    });
     
     res.status(201).json(message);
   } catch (error) {
@@ -855,5 +1008,4 @@ server.listen(PORT, () => {
   console.log(`Serwer działa na porcie ${PORT}`);
 });
 
-// Eksportuj modele dla testów
 module.exports = { User, Channel, Message };

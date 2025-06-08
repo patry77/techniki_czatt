@@ -36,6 +36,13 @@ export default function App() {
   const [hasMoreMessages, setHasMoreMessages] = useState({}); // Nowy stan do śledzenia, czy są starsze wiadomości
   const [isLoadingMoreMessages, setIsLoadingMoreMessages] = useState(false); // Nowy stan do śledzenia ładowania starszych wiadomości
   
+  // Stany dla wątków
+  const [showThread, setShowThread] = useState(false);
+  const [threadMessage, setThreadMessage] = useState(null);
+  const [threadMessages, setThreadMessages] = useState([]);
+  const [threadInput, setThreadInput] = useState('');
+  const [replyingToMessage, setReplyingToMessage] = useState(null);
+  
   // WebSocket
   const socketRef = useRef(null);
   const currentTokenRef = useRef(null); // Ref to store the current token for socket re-initialization
@@ -235,10 +242,10 @@ export default function App() {
       console.error("initializeSocket called without a token.");
       return;
     }
-    currentTokenRef.current = token; // Update current token
+    currentTokenRef.current = token;
 
     if (socketRef.current) {
-      socketRef.current.off('disconnect', handleDisconnect); // Remove previous disconnect handler
+      socketRef.current.off('disconnect', handleDisconnect);
       socketRef.current.disconnect();
       console.log('Previous socket disconnected.');
       socketRef.current = null;
@@ -246,10 +253,6 @@ export default function App() {
 
     const newSocket = io('http://localhost:5000', {
       auth: { token: token },
-      // Consider socket.io's default reconnection behavior.
-      // If `reconnection: false`, our manual `handleDisconnect` is fully responsible.
-      // If `reconnection: true` (default), socket.io tries to reconnect the same instance.
-      // Our pattern of creating a new socket means we are mostly doing manual re-establishment.
     });
 
     console.log('Initializing new socket with ID:', newSocket.id);
@@ -289,7 +292,7 @@ export default function App() {
         return;
       }
       
-      // Określ ID rozmówcy (nie nadawcy!)
+      // Określ ID rozmówcy
       const conversationPartnerId = senderId === currentUserId ? receiverId : senderId;
       
       // Automatycznie dodaj rozmówcę do rozpoczętych konwersacji
@@ -409,15 +412,57 @@ export default function App() {
       console.error('Błąd Socket.IO Connection:', error);
     });
 
-    newSocket.on('disconnect', handleDisconnect); // Attach the named handler
+    newSocket.on('disconnect', handleDisconnect);
+
+    // Nowa obsługa odpowiedzi w wątku
+    newSocket.on('threadReply', (data) => {
+      console.log(`Socket [${newSocket.id}] received threadReply:`, data);
+      // Dodaj odpowiedź do wątku jeśli jest otwarty i dotyczy tej wiadomości
+      if (showThread && threadMessage && data.parentMessageId === threadMessage._id) {
+        setThreadMessages(prev => [...prev, data]);
+      }
+      
+      // Zaktualizuj liczbę odpowiedzi w głównej wiadomości
+      setMessages(prev => {
+        const newMessages = { ...prev };
+        Object.keys(newMessages).forEach(channelId => {
+          newMessages[channelId] = newMessages[channelId].map(msg => 
+            msg._id === data.parentMessageId 
+              ? { ...msg, threadReplies: (msg.threadReplies || 0) + 1, lastReplyAt: data.createdAt }
+              : msg
+          );
+        });
+        return newMessages;
+      });
+    });
+
+    newSocket.on('privateThreadReply', (data) => {
+      console.log(`Socket [${newSocket.id}] received privateThreadReply:`, data);
+      // Dodaj odpowiedź do wątku jeśli jest otwarty i dotyczy tej wiadomości
+      if (showThread && threadMessage && data.parentMessageId === threadMessage._id) {
+        setThreadMessages(prev => [...prev, data]);
+      }
+      
+      // Zaktualizuj liczbę odpowiedzi w głównej wiadomości prywatnej
+      setPrivateMessages(prev => {
+        const newMessages = { ...prev };
+        Object.keys(newMessages).forEach(userId => {
+          newMessages[userId] = newMessages[userId].map(msg => 
+            msg._id === data.parentMessageId 
+              ? { ...msg, threadReplies: (msg.threadReplies || 0) + 1, lastReplyAt: data.createdAt }
+              : msg
+          );
+        });
+        return newMessages;
+      });
+    });
 
     socketRef.current = newSocket;
   };
   
   const handleDisconnect = () => {
     console.log('Socket disconnected. ID was:', socketRef.current ? socketRef.current.id : 'N/A');
-    // Attempt to re-initialize after a delay if authenticated and token exists
-    // This creates a new socket instance.
+
     setTimeout(() => {
       if (isAuthenticated && currentTokenRef.current) {
         console.log("Attempting to re-initialize socket after disconnect...");
@@ -425,7 +470,7 @@ export default function App() {
       } else {
         console.log("Not re-initializing socket: not authenticated or no token.");
       }
-    }, 5000); // 5-second delay before attempting to re-initialize
+    }, 5000);
   };
 
   // Aktualizuj status użytkownika
@@ -740,10 +785,10 @@ export default function App() {
     localStorage.removeItem('token');
     localStorage.removeItem('startedConversations'); // Wyczyść zapisane konwersacje
     localStorage.removeItem('activePrivateChat'); // Wyczyść aktywną prywatną konwersację
-    currentTokenRef.current = null; // Clear token
+    currentTokenRef.current = null;
 
     if (socketRef.current) {
-      socketRef.current.off('disconnect', handleDisconnect); // Important: remove listener before disconnecting
+      socketRef.current.off('disconnect', handleDisconnect); 
       socketRef.current.disconnect();
       socketRef.current = null;
       console.log('Socket disconnected on logout.');
@@ -782,12 +827,6 @@ export default function App() {
         });
         
         if (response.ok) {
-          const newMessage = await response.json();
-          // Dodaj wiadomość lokalnie dla nadawcy
-          setPrivateMessages(prev => ({
-            ...prev,
-            [activePrivateChat]: [...(prev[activePrivateChat] || []), newMessage]
-          }));
           setMessageInput('');
         }
       } else if (activeChannel) {
@@ -805,7 +844,6 @@ export default function App() {
         });
         
         if (response.ok) {
-          // Nie dodawaj wiadomości tutaj - zostanie dodana przez Socket.IO
           setMessageInput('');
         }
       }
@@ -840,14 +878,6 @@ export default function App() {
         },
         body: formData
       });
-      
-      if (response.ok && activePrivateChat) {
-        const message = await response.json();
-        setPrivateMessages(prev => ({
-          ...prev,
-          [activePrivateChat]: [...(prev[activePrivateChat] || []), message]
-        }));
-      }
       
       fileInputRef.current.value = '';
     } catch (error) {
@@ -983,6 +1013,103 @@ export default function App() {
       return messages[activeChannel._id] || [];
     }
     return [];
+  };
+
+  // Funkcje dla wątków
+  const openThread = async (message) => {
+    setThreadMessage(message);
+    setShowThread(true);
+    setReplyingToMessage(null);
+    
+    try {
+      const endpoint = message.isPrivate 
+        ? `/api/messages/private/${message._id}/thread`
+        : `/api/messages/${message._id}/thread`;
+        
+      const response = await fetch(`http://localhost:5000${endpoint}`, {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        }
+      });
+      
+      if (response.ok) {
+        const threadData = await response.json();
+        setThreadMessages(threadData.threadMessages || []);
+      }
+    } catch (error) {
+      console.error('Błąd pobierania wątku:', error);
+    }
+  };
+
+  const closeThread = () => {
+    setShowThread(false);
+    setThreadMessage(null);
+    setThreadMessages([]);
+    setThreadInput('');
+    setReplyingToMessage(null);
+  };
+
+  const sendThreadReply = async (e) => {
+    e.preventDefault();
+    if (!threadInput.trim() || !threadMessage) return;
+    
+    try {
+      // Użyj dedykowanego endpointu dla odpowiedzi w wątku
+      let endpoint;
+      if (threadMessage.isPrivate) {
+        // Dla wiadomości prywatnych - użyj endpointu wątku prywatnego
+        const otherUserId = threadMessage.sender._id === user._id ? threadMessage.receiver._id : threadMessage.sender._id;
+        endpoint = `/api/messages/private/${otherUserId}/thread`;
+      } else {
+        // Dla wiadomości kanałowych - użyj endpointu wątku kanału
+        endpoint = `/api/messages/${threadMessage._id}/thread/reply`;
+      }
+        
+      const response = await fetch(`http://localhost:5000${endpoint}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        },
+        body: JSON.stringify({
+          content: threadInput,
+          type: 'text',
+          parentMessageId: threadMessage._id
+        })
+      });
+      
+      if (response.ok) {
+        setThreadInput('');
+        // Odśwież wątek - pobierz ponownie odpowiedzi
+        try {
+          const threadEndpoint = threadMessage.isPrivate 
+            ? `/api/messages/private/${threadMessage._id}/thread`
+            : `/api/messages/${threadMessage._id}/thread`;
+            
+          const threadResponse = await fetch(`http://localhost:5000${threadEndpoint}`, {
+            headers: {
+              'Authorization': `Bearer ${localStorage.getItem('token')}`
+            }
+          });
+          
+          if (threadResponse.ok) {
+            const threadData = await threadResponse.json();
+            setThreadMessages(threadData.threadMessages || []);
+          }
+        } catch (error) {
+          console.error('Błąd odświeżania wątku:', error);
+        }
+      } else {
+        console.error('Błąd wysyłania odpowiedzi w wątku');
+      }
+    } catch (error) {
+      console.error('Błąd wysyłania odpowiedzi w wątku:', error);
+    }
+  };
+
+  const startReply = (message) => {
+    setReplyingToMessage(message);
+    setMessageInput(`@${message.sender.username} `);
   };
 
   // Ekran ładowania
@@ -1321,199 +1448,416 @@ export default function App() {
                     )}
                   </div>
                 </div>
-              </div>
-              
-              {/* Obszar wiadomości */}
-              <div 
-                className="flex-1 overflow-y-auto p-6 space-y-4 bg-gray-50 dark:bg-gray-900"
-                onScroll={(e) => {
-                  if (e.currentTarget.scrollTop === 0 && !isLoadingMoreMessages) {
-                    if (activeChannel && hasMoreMessages[activeChannel._id]) {
-                      fetchMessages(activeChannel._id, true);
-                    } else if (activePrivateChat && hasMoreMessages[activePrivateChat]) {
-                      fetchPrivateMessages(activePrivateChat, true);
-                    }
-                  }
-                }}
-              >
-                {isLoadingMoreMessages && (
-                  <div className="flex justify-center py-2">
-                    <div className="animate-spin rounded-full h-6 w-6 border-t-2 border-b-2 border-purple-500"></div>
-                  </div>
-                )}
-                {getCurrentMessages().map((message, index) => {
-                  const isMyMessage = user && message.sender._id === user._id;
-                  return (
-                    <div key={message._id} className={`flex items-start space-x-3 p-2 transition-all duration-200 group animate-messageSlideIn ${
-                      isMyMessage ? 'flex-row-reverse space-x-reverse' : ''
-                    }`}>
-                      {/* Avatar */}
-                      <div className="w-10 h-10 bg-purple-500 rounded-full flex items-center justify-center flex-shrink-0 animate-fadeIn hover-scale" style={{ animationDelay: `${index * 0.1}s` }}>
-                        {message.sender?.profilePicture ? (
-                          <img src={`http://localhost:5000${message.sender.profilePicture}`} alt="" className="w-full h-full rounded-full object-cover" />
-                        ) : (
-                          <span className="text-sm font-semibold text-white">{message.sender?.username?.[0]?.toUpperCase()}</span>
-                        )}
-                      </div>
-                      
-                      {/* Wiadomość */}
-                      <div className={`flex-1 max-w-[70%] animate-slideInRight ${isMyMessage ? 'animate-slideInLeft' : ''}`} style={{ animationDelay: `${index * 0.1}s` }}>
-                        <div className={`${
-                          isMyMessage 
-                            ? 'bg-purple-500 text-white ml-auto' 
-                            : 'bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700'
-                        } rounded-2xl px-4 py-3 shadow-md hover:shadow-lg transition-all duration-200 hover-lift`}>
-                          
-                          {/* Header wiadomości */}
-                          {!isMyMessage && (
-                            <div className="flex items-baseline space-x-2 mb-1">
-                              <button 
-                                onClick={() => openUserProfile(message.sender._id)}
-                                className="font-semibold text-gray-900 dark:text-white hover:text-purple-600 dark:hover:text-purple-400 transition-colors text-sm cursor-pointer hover:underline"
-                              >
-                                {message.sender?.username}
-                              </button>
-                              <span className="text-xs text-gray-500 dark:text-gray-400">
-                                {new Date(message.createdAt).toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })}
-                              </span>
-                            </div>
-                          )}
-                          
-                          {/* Zawartość wiadomości */}
-                          {message.type === 'text' ? (
-                            <p className={`animate-fadeIn ${isMyMessage ? 'text-white' : 'text-gray-800 dark:text-gray-300'}`}>{message.content}</p>
-                          ) : message.type === 'image' ? (
-                            <img 
-                              src={`http://localhost:5000${message.fileUrl}`} 
-                              alt={message.fileName}
-                              className="mt-1 max-w-full rounded-lg cursor-pointer hover:opacity-90 transition-all duration-300 hover:scale-105 hover:shadow-lg animate-fadeIn"
-                              onClick={() => window.open(`http://localhost:5000${message.fileUrl}`, '_blank')}
-                            />
-                          ) : (
-                            <a 
-                              href={`http://localhost:5000${message.fileUrl}`}
-                              download={message.fileName}
-                              className={`inline-flex items-center space-x-2 mt-1 px-3 py-2 rounded-lg transition-all duration-200 hover-lift hover-glow animate-fadeIn ${
-                                isMyMessage 
-                                  ? 'bg-white bg-opacity-20 hover:bg-opacity-30 text-white' 
-                                  : 'bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-300'
-                              }`}
-                            >
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                              </svg>
-                              <span className="text-sm">{message.fileName}</span>
-                            </a>
-                          )}
-                          
-                          {/* Timestamp dla własnych wiadomości */}
-                          {isMyMessage && (
-                            <div className="text-xs text-white text-opacity-80 mt-1 text-right">
-                              {new Date(message.createdAt).toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })}
-                            </div>
-                          )}
-                        </div>
-                        
-                        {/* Reakcje */}
-                        <div className={`flex items-center space-x-1 mt-2 flex-wrap gap-1 ${isMyMessage ? 'justify-end' : 'justify-start'}`}>
-                          {message.reactions && message.reactions.length > 0 && (
-                            <>
-                              {message.reactions.map((reaction, idx) => (
-                                <button
-                                  key={idx}
-                                  onClick={() => addReaction(message._id, reaction.emoji)}
-                                  className="bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 px-2 py-1 rounded-full text-sm transition-all duration-200 flex items-center space-x-1 min-w-0 reaction-button hover-scale animate-reactionPop shadow-sm"
-                                  title={`${reaction.users.length} reakcji`}
-                                  style={{ animationDelay: `${idx * 0.1}s` }}
-                                >
-                                  <span className="text-base leading-none">{reaction.emoji}</span>
-                                  <span className="text-xs text-gray-600 dark:text-gray-400 font-medium">{reaction.users.length}</span>
-                                </button>
-                              ))}
-                            </>
-                          )}
-                          {/* Przycisk dodawania reakcji */}
-                          <div className="relative inline-block">
-                            <button
-                              onClick={() => setShowEmojiPicker(showEmojiPicker === message._id ? null : message._id)}
-                              className="bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 px-2 py-1 rounded-full text-sm transition-all duration-200 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 opacity-0 group-hover:opacity-100 hover-scale hover-glow shadow-sm"
-                              title="Dodaj reakcję"
-                            >
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                              </svg>
-                            </button>
-                            
-                            {/* Picker emoji */}
-                            {showEmojiPicker === message._id && (
-                              <div className={`absolute top-full mt-2 bg-white dark:bg-gray-700 rounded-lg shadow-xl border border-gray-200 dark:border-gray-600 p-2 grid grid-cols-5 gap-1 z-50 min-w-max animate-emojiPickerSlide glass ${
-                                isMyMessage ? 'right-0' : 'left-0'
-                              }`}>
-                                {emojis.map((emoji, emojiIdx) => (
-                                  <button
-                                    key={emoji}
-                                    onClick={() => {
-                                      addReaction(message._id, emoji);
-                                      setShowEmojiPicker(null);
-                                    }}
-                                    className="hover:bg-gray-100 dark:hover:bg-gray-600 p-2 rounded transition-all duration-200 text-lg leading-none w-10 h-10 flex items-center justify-center hover-scale animate-fadeIn"
-                                    title={`Dodaj ${emoji}`}
-                                    style={{ animationDelay: `${emojiIdx * 0.05}s` }}
-                                  >
-                                    {emoji}
-                                  </button>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-                {renderTypingIndicator()}
-                <div ref={messagesEndRef} />
-              </div>
-              
-              {/* Formularz wysyłania wiadomości */}
-              <div className="bg-white dark:bg-gray-800 px-6 py-4 border-t border-gray-200 dark:border-gray-700">
-                <form onSubmit={sendMessage} className="flex items-center space-x-4">
-                  <input
-                    type="file"
-                    ref={fileInputRef}
-                    onChange={handleFileUpload}
-                    className="hidden"
-                    accept="image/*,.pdf,.doc,.docx,.txt,.zip"
-                  />
-                  
+                
+                {/* Przycisk zamykania wątku jeśli jest otwarty */}
+                {showThread && (
                   <button
-                    type="button"
-                    onClick={() => fileInputRef.current.click()}
-                    className="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-white transition-colors"
-                  >
-                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-                    </svg>
-                  </button>
-                  
-                  <input
-                    type="text"
-                    value={messageInput}
-                    onChange={handleMessageInputChange}
-                    placeholder={activeChannel ? `Wyślij wiadomość do #${activeChannel.name}` : `Wyślij wiadomość do ${users.find(u => u._id === activePrivateChat)?.username}`}
-                    className="flex-1 bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white px-4 py-2 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
-                  />
-                  
-                  <button
-                    type="submit"
-                    disabled={!messageInput.trim()}
-                    className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400 dark:disabled:bg-gray-600 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg transition-colors"
+                    onClick={closeThread}
+                    className="p-2 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 transition-all duration-200"
+                    title="Zamknij wątek"
                   >
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                     </svg>
                   </button>
-                </form>
+                )}
+              </div>
+              
+              <div className="flex flex-1 overflow-hidden">
+                {/* Obszar głównych wiadomości */}
+                <div className={`${showThread ? 'w-1/2' : 'w-full'} flex flex-col transition-all duration-300`}>
+                  {/* Obszar wiadomości */}
+                  <div 
+                    className="flex-1 overflow-y-auto p-6 space-y-4 bg-gray-50 dark:bg-gray-900"
+                    onScroll={(e) => {
+                      if (e.currentTarget.scrollTop === 0 && !isLoadingMoreMessages) {
+                        if (activeChannel && hasMoreMessages[activeChannel._id]) {
+                          fetchMessages(activeChannel._id, true);
+                        } else if (activePrivateChat && hasMoreMessages[activePrivateChat]) {
+                          fetchPrivateMessages(activePrivateChat, true);
+                        }
+                      }
+                    }}
+                  >
+                    {isLoadingMoreMessages && (
+                      <div className="flex justify-center py-2">
+                        <div className="animate-spin rounded-full h-6 w-6 border-t-2 border-b-2 border-purple-500"></div>
+                      </div>
+                    )}
+                    {getCurrentMessages().map((message, index) => {
+                      const isMyMessage = user && message.sender._id === user._id;
+                      return (
+                        <div key={message._id} className={`flex transition-all duration-200 group animate-messageSlideIn ${
+                          isMyMessage ? 'flex-row-reverse' : ''
+                        }`}>
+                          {/* Avatar */}
+                          <div className="w-10 h-10 bg-purple-500 rounded-full flex items-center justify-center flex-shrink-0 animate-fadeIn hover-scale mr-3" style={{ animationDelay: `${index * 0.1}s` }}>
+                            {message.sender?.profilePicture ? (
+                              <img src={`http://localhost:5000${message.sender.profilePicture}`} alt="" className="w-full h-full rounded-full object-cover" />
+                            ) : (
+                              <span className="text-white font-semibold text-sm">{message.sender?.username?.[0]?.toUpperCase()}</span>
+                            )}
+                          </div>
+                          
+                          {/* Kontener wiadomości z akcjami */}
+                          <div className={`flex flex-col max-w-xs lg:max-md xl:max-w-lg ${isMyMessage ? 'items-end mr-3' : 'items-start'}`}>
+                            {/* Dymek wiadomości */}
+                            <div className={`px-4 py-3 rounded-2xl shadow-md hover-scale animate-fadeIn transition-all duration-200 group-hover:shadow-lg ${
+                              isMyMessage 
+                                ? 'animated-gradient-purple text-white rounded-br-md' 
+                                : 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-bl-md border border-gray-200 dark:border-gray-600'
+                            }`} style={{ animationDelay: `${index * 0.1}s` }}>
+                              
+                              {/* Nazwa użytkownika i timestamp dla wiadomości nie-własnych */}
+                              {!isMyMessage && (
+                                <div className="flex items-baseline space-x-2 mb-1">
+                                  <button 
+                                    onClick={() => openUserProfile(message.sender._id)}
+                                    className="font-semibold text-gray-900 dark:text-white hover:text-purple-600 dark:hover:text-purple-400 transition-colors text-sm cursor-pointer hover:underline"
+                                  >
+                                    {message.sender?.username}
+                                  </button>
+                                  <span className="text-xs text-gray-500 dark:text-gray-400">
+                                    {new Date(message.createdAt).toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })}
+                                  </span>
+                                </div>
+                              )}
+                              
+                              {/* Zawartość wiadomości */}
+                              {message.type === 'text' ? (
+                                <p className={`animate-fadeIn ${isMyMessage ? 'text-white' : 'text-gray-800 dark:text-gray-300'}`}>{message.content}</p>
+                              ) : message.type === 'image' ? (
+                                <img 
+                                  src={`http://localhost:5000${message.fileUrl}`} 
+                                  alt="Przesłany obraz" 
+                                  className="max-w-full h-auto rounded-lg animate-fadeIn hover-scale cursor-pointer"
+                                  onClick={() => window.open(`http://localhost:5000${message.fileUrl}`, '_blank')}
+                                />
+                              ) : (
+                                <a 
+                                  href={`http://localhost:5000${message.fileUrl}`} 
+                                  download 
+                                  className={`flex items-center space-x-2 hover:underline ${isMyMessage ? 'text-white' : 'text-purple-600 dark:text-purple-400'}`}
+                                >
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                  </svg>
+                                  <span className="text-sm">{message.fileName}</span>
+                                </a>
+                              )}
+                              
+                              {/* Timestamp dla własnych wiadomości */}
+                              {isMyMessage && (
+                                <div className="text-xs text-white text-opacity-80 mt-1 text-right">
+                                  {new Date(message.createdAt).toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })}
+                                </div>
+                              )}
+                            </div>
+                            
+                            {/* Reakcje i przyciski akcji pod dymkiem */}
+                            <div className={`flex items-center space-x-2 mt-2 flex-wrap gap-1 ${isMyMessage ? 'justify-end' : 'justify-start'}`}>
+                              {/* Reakcje */}
+                              {message.reactions && message.reactions.length > 0 && (
+                                <>
+                                  {message.reactions.map((reaction, idx) => (
+                                    <button
+                                      key={idx}
+                                      onClick={() => addReaction(message._id, reaction.emoji)}
+                                      className="bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 px-2 py-1 rounded-full text-sm transition-all duration-200 flex items-center space-x-1 min-w-0 reaction-button hover-scale animate-reactionPop shadow-sm"
+                                      title={`${reaction.users.length} reakcji`}
+                                      style={{ animationDelay: `${idx * 0.1}s` }}
+                                    >
+                                      <span className="text-base leading-none">{reaction.emoji}</span>
+                                      <span className="text-xs text-gray-600 dark:text-gray-400 font-medium">{reaction.users.length}</span>
+                                    </button>
+                                  ))}
+                                </>
+                              )}
+                              
+                              {/* Przyciski akcji */}
+                              <div className="flex items-center space-x-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                                {/* Przycisk odpowiedzi w wątku */}
+                                <button
+                                  onClick={() => openThread(message)}
+                                  className="bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 px-2 py-1 rounded-full text-sm transition-all duration-200 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover-scale hover-glow shadow-sm flex items-center space-x-1"
+                                  title="Odpowiedz w wątku"
+                                >
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+                                  </svg>
+                                  {message.threadReplies > 0 && (
+                                    <span className="text-xs">{message.threadReplies}</span>
+                                  )}
+                                </button>
+                                
+                                {/* Przycisk szybkiej odpowiedzi */}
+                                <button
+                                  onClick={() => startReply(message)}
+                                  className="bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 px-2 py-1 rounded-full text-sm transition-all duration-200 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover-scale hover-glow shadow-sm"
+                                  title="Odpowiedz"
+                                >
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+                                  </svg>
+                                </button>
+                                
+                                {/* Przycisk dodawania reakcji */}
+                                <div className="relative inline-block">
+                                  <button
+                                    onClick={() => setShowEmojiPicker(showEmojiPicker === message._id ? null : message._id)}
+                                    className="bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 px-2 py-1 rounded-full text-sm transition-all duration-200 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover-scale hover-glow shadow-sm"
+                                    title="Dodaj reakcję"
+                                  >
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                  </button>
+                                  
+                                  {/* Picker emoji */}
+                                  {showEmojiPicker === message._id && (
+                                    <div className={`absolute top-full mt-2 bg-white dark:bg-gray-700 rounded-lg shadow-xl border border-gray-200 dark:border-gray-600 p-2 grid grid-cols-5 gap-1 z-50 min-w-max animate-emojiPickerSlide glass ${
+                                      isMyMessage ? 'right-0' : 'left-0'
+                                    }`}>
+                                      {emojis.map((emoji, emojiIdx) => (
+                                        <button
+                                          key={emoji}
+                                          onClick={() => {
+                                            addReaction(message._id, emoji);
+                                            setShowEmojiPicker(null);
+                                          }}
+                                          className="hover:bg-gray-100 dark:hover:bg-gray-600 p-2 rounded transition-all duration-200 text-lg leading-none w-10 h-10 flex items-center justify-center hover-scale animate-fadeIn"
+                                          title={`Dodaj ${emoji}`}
+                                          style={{ animationDelay: `${emojiIdx * 0.05}s` }}
+                                        >
+                                          {emoji}
+                                        </button>
+                                                                           ))}
+                                    </div>
+                                  )}
+                                                              
+                                                               </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {renderTypingIndicator()}
+                    <div ref={messagesEndRef} />
+                  </div>
+                  
+                  {/* Formularz wysyłania wiadomości */}
+                  <div className="bg-white dark:bg-gray-800 px-6 py-4 border-t border-gray-200 dark:border-gray-700">
+                    {replyingToMessage && (
+                      <div className="mb-3 p-3 bg-gray-100 dark:bg-gray-700 rounded-lg flex items-center justify-between">
+                        <div className="flex items-center space-x-2">
+                          <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+                          </svg>
+                          <span className="text-sm text-gray-600 dark:text-gray-400">
+                            Odpowiadasz na wiadomość od {replyingToMessage.sender.username}
+                          </span>
+                                               </div>
+                        <button
+                          onClick={() => {
+                            setReplyingToMessage(null);
+                            setMessageInput('');
+                          }}
+                          className="text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                    )}
+                    
+                    <form onSubmit={sendMessage} className="flex items-center space-x-4">
+                      <input
+                        type="file"
+                        ref={fileInputRef}
+                        onChange={handleFileUpload}
+                        className="hidden"
+                        accept="image/*,.pdf,.doc,.docx,.txt,.zip"
+                      />
+                      
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current.click()}
+                        className="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-white transition-colors"
+                      >
+                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                        </svg>
+                      </button>
+                      
+                      <input
+                        type="text"
+                        value={messageInput}
+                        onChange={handleMessageInputChange}
+                        placeholder={activeChannel ? `Wyślij wiadomość do #${activeChannel.name}` : `Wyślij wiadomość do ${users.find(u => u._id === activePrivateChat)?.username}`}
+                        className="flex-1 bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white px-4 py-2 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      />
+                      
+                      <button
+                        type="submit"
+                        disabled={!messageInput.trim()}
+                        className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400 dark:disabled:bg-gray-600 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg transition-colors"
+                      >
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                        </svg>
+                      </button>
+                    </form>
+                  </div>
+                </div>
+                
+                {/* Panel wątku */}
+                {showThread && threadMessage && (
+                  <div className="w-1/2 border-l border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 flex flex-col animate-slideInRight">
+                    {/* Header wątku */}
+                    <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
+                      <div className="flex items-center justify-between">
+                        <h3 className="text-lg font-semibold">Wątek</h3>
+                        <button
+                          onClick={closeThread}
+                          className="p-2 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 transition-all duration-200"
+                        >
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                      
+                      {/* Wiadomość nadrzędna */}
+                      <div className="mt-4 p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                        <div className="flex items-center space-x-2 mb-2">
+                          <div className="w-8 h-8 bg-purple-500 rounded-full flex items-center justify-center">
+                            {threadMessage.sender?.profilePicture ? (
+                              <img src={`http://localhost:5000${threadMessage.sender.profilePicture}`} alt="" className="w-full h-full rounded-full" />
+                            ) : (
+                              <span className="text-white font-semibold text-xs">{threadMessage.sender?.username?.[0]?.toUpperCase()}</span>
+                            )}
+                          </div>
+                          <span className="font-semibold text-sm">{threadMessage.sender?.username}</span>
+                          <span className="text-xs text-gray-500">
+                            {new Date(threadMessage.createdAt).toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        </div>
+                        {threadMessage.type === 'text' ? (
+                          <p className="text-sm">{threadMessage.content}</p>
+                        ) : threadMessage.type === 'image' ? (
+                          <img 
+                            src={`http://localhost:5000${threadMessage.fileUrl}`} 
+                            alt="Przesłany obraz" 
+                            className="max-w-full h-auto rounded-lg"
+                          />
+                        ) : (
+                          <a 
+                            href={`http://localhost:5000${threadMessage.fileUrl}`} 
+                            download 
+                            className="flex items-center space-x-2 text-purple-600 dark:text-purple-400 hover:underline"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            </svg>
+                            <span className="text-sm">{threadMessage.fileName}</span>
+                          </a>
+                        )}
+                        {threadMessage.threadReplies > 0 && (
+                          <p className="text-xs text-gray-500 mt-2">{threadMessage.threadReplies} odpowiedzi</p>
+                        )}
+                      </div>
+                    </div>
+                    
+                    {/* Odpowiedzi w wątku */}
+                    <div className="flex-1 overflow-y-auto p-6 space-y-3">
+                      {threadMessages.map((message, index) => {
+                        const isMyMessage = user && message.sender._id === user._id;
+                        return (
+                          <div key={message._id} className={`flex items-start space-x-3 animate-fadeIn ${
+                            isMyMessage ? 'flex-row-reverse space-x-reverse' : ''
+                          }`} style={{ animationDelay: `${index * 0.1}s` }}>
+                            {/* Avatar */}
+                            <div className="w-8 h-8 bg-purple-500 rounded-full flex items-center justify-center flex-shrink-0">
+                              {message.sender?.profilePicture ? (
+                                <img src={`http://localhost:5000${message.sender.profilePicture}`} alt="" className="w-full h-full rounded-full" />
+                              ) : (
+                                <span className="text-white font-semibold text-xs">{message.sender?.username?.[0]?.toUpperCase()}</span>
+                              )}
+                            </div>
+                            
+                            {/* Wiadomość */}
+                            <div className={`max-w-xs px-3 py-2 rounded-xl shadow-sm ${
+                              isMyMessage 
+                                ? 'bg-purple-600 text-white rounded-br-md' 
+                                : 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white rounded-bl-md'
+                            }`}>
+                              {!isMyMessage && (
+                                <div className="flex items-baseline space-x-2 mb-1">
+                                  <span className="font-semibold text-xs">{message.sender?.username}</span>
+                                  <span className="text-xs opacity-60">
+                                    {new Date(message.createdAt).toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })}
+                                  </span>
+                                </div>
+                              )}
+                              
+                              {message.type === 'text' ? (
+                                <p className="text-sm">{message.content}</p>
+                              ) : message.type === 'image' ? (
+                                <img 
+                                  src={`http://localhost:5000${message.fileUrl}`} 
+                                  alt="Przesłany obraz" 
+                                  className="max-w-full h-auto rounded-lg"
+                                />
+                              ) : (
+                                <a 
+                                  href={`http://localhost:5000${message.fileUrl}`} 
+                                  download 
+                                  className={`flex items-center space-x-2 hover:underline ${isMyMessage ? 'text-white' : 'text-purple-600 dark:text-purple-400'}`}
+                                >
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                  </svg>
+                                  <span className="text-sm">{message.fileName}</span>
+                                </a>
+                              )}
+                              
+                              {isMyMessage && (
+                                <div className="text-xs opacity-60 mt-1 text-right">
+                                  {new Date(message.createdAt).toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    
+                    {/* Formularz odpowiedzi w wątku */}
+                    <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700">
+                      <form onSubmit={sendThreadReply} className="flex items-center space-x-3">
+                        <input
+                          type="text"
+                          value={threadInput}
+                          onChange={(e) => setThreadInput(e.target.value)}
+                          placeholder="Odpowiedz w wątku..."
+                          className="flex-1 bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white px-4 py-2 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                        />
+                        
+                        <button
+                          type="submit"
+                          disabled={!threadInput.trim()}
+                          className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400 dark:disabled:bg-gray-600 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg transition-colors"
+                        >
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                          </svg>
+                        </button>
+                      </form>
+                    </div>
+                  </div>
+                )}
               </div>
             </>
           ) : (
@@ -1586,7 +1930,7 @@ export default function App() {
                   onClick={() => {
                     setShowCreateChannel(false);
                     setNewChannelData({ name: '', description: '' });
-                  }}
+                                   }}
                   className="flex-1 bg-gray-300 dark:bg-gray-600 hover:bg-gray-400 dark:hover:bg-gray-700 text-gray-900 dark:text-white font-semibold py-2 rounded-lg transition-colors"
                 >
                   Anuluj
@@ -1688,7 +2032,7 @@ export default function App() {
                 <div>
                   <h4 className="text-lg font-semibold">{selectedUser?.username}</h4>
                   <p className="text-sm text-gray-600 dark:text-gray-400">{selectedUser?.email}</p>
-                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                  <p className="text-xs text-gray-500 dark:text-gray-500 mt-1">
                     {selectedUser.isOnline ? 'Online' : `Ostatnio ${new Date(selectedUser.lastSeen).toLocaleString('pl-PL')}`}
                   </p>
                 </div>

@@ -604,3 +604,32 @@ body {
     transform: rotate(360deg);
   }
 }
+
+/* Thread panel animations */
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.animate-slideInRight {
+  animation: slideInRight 0.3s ease-out;
+}
+
+/* Thread message animations */
+.thread-message {
+  animation: fadeIn 0.3s ease-out;
+}
+
+.thread-message:nth-child(odd) {
+  animation-delay: 0.1s;
+}
+
+.thread-message:nth-child(even) {
+  animation-delay: 0.2s;
+}
